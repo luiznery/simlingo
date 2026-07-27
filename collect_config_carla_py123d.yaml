@@ -1,0 +1,22 @@
+# Example config for collect_embeddings_carla_py123d.py.
+# Any value here can be overridden by the matching CLI flag.
+
+checkpoint: outputs/2026_06_08_17_14_55_simlingo_seed1/checkpoints/last.ckpt
+experiment_config: null
+output_dir: embeddings_dataset_carla_py123d
+data_root: null              # falls back to $PY123D_DATA_ROOT
+log_names: null               # comma-separated (CLI) or YAML list of py123d CARLA log names, null = all
+max_scenes: null               # cap on number of scenes, null = all available after filtering
+scene_cache_path: py123d_carla_scene_cache.json  # caches the slow full-dataset
+                               # scene validation (only used when max_scenes is
+                               # null); set to null/"" to disable
+cut_bottom_quarter: true
+batch_size: 4
+num_workers: 4
+resume: false
+device: cuda
+dtype: fp32
+max_new_tokens: 100
+pad_to_dim: 2048
+seed: 42
+manifest_flush_every: 25

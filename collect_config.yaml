@@ -1,0 +1,20 @@
+# Example config for collect_embeddings.py.
+# Any value here can be overridden by the matching CLI flag, e.g. --batch-size 8.
+
+checkpoint: outputs/2026_06_08_17_14_55_simlingo_seed1/checkpoints/last.ckpt
+experiment_config: null   # falls back to <checkpoint>/../../.hydra/config.yaml when null
+output_dir: embeddings_dataset
+mode: commentary            # commentary | qa | dreaming
+batch_size: 4
+num_workers: 4
+limit: null                  # cap on number of scenes collected, null = all
+resume: false
+device: cuda                 # cuda | cpu
+dtype: fp32                  # fp32 | fp16 | bf16
+max_new_tokens: 100
+pad_to_dim: 2048              # InternVL2-1B's actual LLM hidden size is 896;
+                               # embeddings are zero-padded to this width so
+                               # every scene has a fixed [100, pad_to_dim] shape
+seed: 42
+read_raw_measurements: true   # extra disk IO to fill vehicle_pos / route_id
+manifest_flush_every: 25

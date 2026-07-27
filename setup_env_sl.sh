@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# Builds a plain venv (no conda) equivalent of environment.yaml, named env_sl.
+# Mirrors the README's conda + two separate pip-install steps:
+#   conda env create -f environment.yaml && conda activate simlingo
+#   pip install torch==2.2.0
+#   pip install flash-attn==2.7.0.post2
+#
+# Usage: ./setup_env_sl.sh
+# Override the interpreter with: PYTHON_BIN=/path/to/python3.8 ./setup_env_sl.sh
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+VENV_NAME="env_sl"
+
+# environment.yaml pins python=3.8.18. Fall back to 3.9 (closest available
+# with numpy==1.23.0 wheels) if 3.8 isn't installed, and warn loudly --
+# some exact pins below were only tested against 3.8.
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+    for candidate in python3.8 python3.9; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    echo "ERROR: no python3.8 or python3.9 interpreter found on PATH." >&2
+    echo "environment.yaml pins python=3.8.18 -- install one (pyenv, deadsnakes PPA, etc.)" >&2
+    echo "or set PYTHON_BIN=/path/to/python before re-running this script." >&2
+    exit 1
+fi
+if [ "$PYTHON_BIN" != "python3.8" ]; then
+    echo "WARNING: python3.8 not found, using $PYTHON_BIN ($($PYTHON_BIN --version))." >&2
+    echo "         environment.yaml was pinned/tested against Python 3.8.18; some exact" >&2
+    echo "         pins (e.g. numpy==1.23.0) may lack wheels" >&2
+    echo "         for this interpreter and fail to install." >&2
+fi
+
+echo ">>> Creating venv '$VENV_NAME' with $PYTHON_BIN"
+$PYTHON_BIN -m venv "$VENV_NAME"
+# shellcheck disable=SC1091
+source "$VENV_NAME/bin/activate"
+
+echo ">>> Upgrading packaging tools (pinned to match environment.yaml's conda pip/setuptools/wheel)"
+pip install --upgrade pip==23.3.1 setuptools==68.2.2 wheel==0.41.2
+
+# Pinned deps from environment.yaml's pip section, minus torch/torchvision/
+# torchaudio, their bundled nvidia-*-cu12 libs, and triton -- those are
+# resolved automatically by installing torch on its own below, matching the
+# README's separate "pip install torch==2.2.0" step (done to ensure the
+# correct CUDA build rather than whatever conda would otherwise resolve).
+# opencv-python is bumped from the original 4.2.0.32 pin to 4.5.5.64, the
+# closest version with a cp39 wheel (4.2.0.32 was cp38-only).
+cat > requirements-env_sl.txt <<'EOF'
+accelerate==1.0.1
+adal==1.2.7
+aiohttp==3.9.3
+aiosignal==1.3.1
+annotated-types==0.6.0
+ansicolors==1.1.8
+antlr4-python3-runtime==4.9.3
+anyio==4.5.2
+appdirs==1.4.4
+async-timeout==4.0.3
+asyncio-atexit==1.0.1
+attrs==23.2.0
+azure-common==1.1.28
+azure-core==1.30.0
+azure-identity==1.14.0
+azure-keyvault==4.2.0
+azure-keyvault-certificates==4.8.0
+azure-keyvault-keys==4.9.0
+azure-keyvault-secrets==4.8.0
+azure-nspkg==3.0.2
+azure-storage-blob==12.18.1
+carla==0.9.15
+certifi==2024.2.2
+cffi==1.16.0
+charset-normalizer==3.3.2
+click==8.1.7
+cloudpickle==3.0.0
+colorama==0.4.6
+cramjam==2.8.2
+cryptography==42.0.4
+cycler==0.12.1
+debugpy==1.8.1
+deepdiff==6.7.1
+deepspeed==0.16.2
+dictor==0.1.12
+distro==1.9.0
+docker-pycreds==0.4.0
+einops==0.7.0
+elementpath==1.3.3
+ephem==4.1.5
+exceptiongroup==1.2.2
+fastjsonschema==2.21.1
+fastparquet==2024.2.0
+filelock==3.13.1
+filterpy==1.4.5
+fonttools==4.48.1
+frozenlist==1.4.1
+fsspec==2024.2.0
+gitdb==4.0.11
+gitpython==3.1.42
+gym==0.26.2
+gym-notices==0.0.8
+h11==0.16.0
+h5py==3.10.0
+hjson==3.1.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface-hub==0.27.0
+hydra-core==1.3.2
+hydra-zen==0.12.1
+idna==3.6
+imageio==2.34.0
+imgaug==0.4.0
+immutabledict==4.1.0
+importlib-metadata==7.0.1
+importlib-resources==6.1.1
+isodate==0.6.1
+jinja2==3.1.3
+jiter==0.9.0
+joblib==1.3.2
+jsonschema==4.23.0
+jsonschema-specifications==2023.12.1
+kiwisolver==1.4.5
+laspy==2.5.3
+laszip==0.2.3
+lazrs==0.5.3
+lazy-loader==0.3
+lightning==2.3.3
+lightning-utilities==0.10.1
+line-profiler==4.1.2
+lxml==5.3.0
+markupsafe==2.1.5
+matplotlib==3.5.3
+mpmath==1.3.0
+msal==1.27.0
+msal-extensions==1.1.0
+msgpack==1.1.0
+msrest==0.7.1
+msrestazure==0.6.4
+multidict==6.0.5
+nbclient==0.10.1
+nbformat==5.10.4
+networkx==3.1
+ninja==1.11.1.1
+numpy==1.23.0
+nvidia-ml-py==12.560.30
+oauthlib==3.2.2
+omegaconf==2.3.0
+onnx==1.15.0
+openai==1.76.0
+opencv-python==4.5.5.64
+ordered-set==4.1.0
+orjson==3.10.15
+packaging==23.2
+pandas==2.0.3
+papermill==2.6.0
+peft==0.13.2
+pexpect==4.9.0
+pillow==10.2.0
+pkgutil-resolve-name==1.3.10
+portalocker==2.8.2
+protobuf==4.25.3
+psutil==5.9.8
+py==1.11.0
+py-cpuinfo==9.0.0
+py-trees==0.8.3
+pyarrow==15.0.1
+pycparser==2.21
+pydantic==2.6.1
+pydantic-core==2.16.2
+pydot==2.0.0
+pygame==2.5.2
+pyjwt==2.8.0
+pynvml==11.5.0
+pyparsing==3.1.1
+python-dateutil==2.8.2
+python-json-logger==2.0.7
+pytorch-lightning==2.4.0
+pytz==2024.1
+pywavelets==1.4.1
+pyyaml==6.0.1
+rdp==0.8
+referencing==0.35.1
+regex==2023.12.25
+requests==2.31.0
+requests-oauthlib==1.3.1
+retry==0.9.2
+rpds-py==0.20.1
+safetensors==0.5.2
+scikit-image==0.21.0
+scikit-learn==1.3.2
+scipy==1.10.1
+seaborn==0.13.2
+send2trash==1.8.2
+sentry-sdk==1.40.5
+setproctitle==1.3.3
+shapely==1.7.1
+simple-watchdog-timer==0.1.1
+smmap==5.0.1
+sniffio==1.3.1
+sympy==1.12
+tabulate==0.9.0
+tenacity==9.0.0
+termcolor==2.4.0
+threadpoolctl==3.2.0
+tifffile==2023.7.10
+timm==0.9.16
+tokenizers==0.20.3
+torchdata==0.7.1
+torchmetrics==1.3.1
+tqdm==4.66.2
+transformers==4.46.3
+transforms3d==0.4.1
+typing-extensions>=4.11.0,<5.0
+tzdata==2024.1
+ujson==5.9.0
+urllib3==2.2.0
+wandb==0.16.3
+webcolors==1.13
+xmlschema==1.0.18
+yarl==1.9.4
+zipp==3.17.0
+EOF
+
+echo ">>> Installing pinned dependencies (this can take a while)"
+pip install -r requirements-env_sl.txt
+
+echo ">>> Installing torch separately (matches README: ensures the correct CUDA build)"
+pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0
+
+echo ">>> Installing flash-attn separately (compiles against the torch just installed)"
+pip install flash-attn==2.7.0.post2
+
+echo
+echo "Done. Activate with: source $VENV_NAME/bin/activate"
+echo "Then set CARLA_ROOT/WORK_DIR/PYTHONPATH per README.md's Setup section"
+echo "before running CARLA-dependent scripts."
