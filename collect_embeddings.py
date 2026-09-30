@@ -50,7 +50,7 @@ DEFAULT_SETTINGS = {
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "dtype": "fp32",  # fp32 | fp16 | bf16
     "max_new_tokens": 100,
-    "pad_to_dim": 2048,
+    "pad_to_dim": None,  # null = use the model's actual hidden size, no padding
     "seed": 42,
     "read_raw_measurements": True,
     "manifest_flush_every": 25,
@@ -205,7 +205,7 @@ class EmbeddingCollector:
         embedding_type: str,
         pad_token_id: int,
         max_new_tokens: int = 100,
-        pad_to_dim: int = 2048,
+        pad_to_dim: Optional[int] = None,
         device: str = "cuda",
         dtype: torch.dtype = torch.float32,
         read_raw_measurements: bool = True,
@@ -745,6 +745,14 @@ def main():
         dtype=DTYPE_MAP[settings["dtype"]],
     )
 
+    # Resolved to a concrete number (never left as None) before it's used
+    # anywhere else: EmbeddingCollector.extract_embeddings treats
+    # pad_to_dim=None as "use the model's actual hidden size" internally, but
+    # write_run_config's mismatch-note logic below does `min(actual, pad_to_dim)`
+    # unconditionally and would crash on a None pad_to_dim.
+    actual_hidden_size = model.language_model.hidden_size
+    settings["pad_to_dim"] = settings["pad_to_dim"] or actual_hidden_size
+
     data_loader = get_data_loader(
         cfg,
         processor,
@@ -781,7 +789,7 @@ def main():
     write_run_config(
         output_dir,
         settings,
-        actual_hidden_size=model.language_model.hidden_size,
+        actual_hidden_size=actual_hidden_size,
         num_scenes=collector.scene_counter,
     )
 

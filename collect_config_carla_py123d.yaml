@@ -10,6 +10,13 @@ max_scenes: null               # cap on number of scenes, null = all available a
 scene_cache_path: py123d_carla_scene_cache.json  # caches the slow full-dataset
                                # scene validation (only used when max_scenes is
                                # null); set to null/"" to disable
+target_point_mode: trajectory  # trajectory (default) | route | drivor (real map-based
+                               # reconstructions, see py123d_route_target_points.py -- route:
+                               # near/far ~1m apart, mirrors CARLA's own RoutePlanner index
+                               # mechanism; drivor: near/far tens of meters apart, mirrors
+                               # nav123d's own fixed-arc-length-offset method. Both fall back
+                               # to trajectory per-scene when unavailable, and cost real extra
+                               # I/O per scene -- test with max_scenes small before a full run.
 cut_bottom_quarter: true
 batch_size: 4
 num_workers: 4
@@ -17,6 +24,9 @@ resume: false
 device: cuda
 dtype: fp32
 max_new_tokens: 100
-pad_to_dim: 2048
+pad_to_dim: null              # null = use the model's actual hidden size (896 for
+                               # InternVL2-1B), no padding. Set to a fixed number
+                               # instead if you need every scene's saved tensor at
+                               # a constant width across different model checkpoints.
 seed: 42
 manifest_flush_every: 25

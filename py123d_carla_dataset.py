@@ -149,6 +149,77 @@ def elevation_profile(scene, origin_xy: np.ndarray, origin_yaw: float) -> Tuple[
     return np.array(xs), np.array(zs)
 
 
+def compute_target_points(scene) -> np.ndarray:
+    """Re-derives the near/far navigation-goal points fed to the model via
+    the <TARGET_POINT> placeholder token's learned embedding (see
+    Py123dCarlaDataset.__getitem__ and DrivingInput.target_point) purely
+    from the scene's own recorded future ego trajectory. These aren't a
+    model output -- just a deterministic slice of the same future_xy this
+    file already builds for waypoints/path -- so they're recomputed here on
+    demand for visualization instead of being saved at collection time.
+
+    Returns a (2, 2) array: [near_point (~0.8s ahead), far_point (full
+    PRED_LEN horizon)], same ego-frame convention as
+    expert_route/expert_waypoints."""
+    ego0 = scene.get_ego_state_se3_at_iteration(0)
+    origin_xy = np.array([ego0.rear_axle_se3.x, ego0.rear_axle_se3.y])
+    origin_yaw = ego0.rear_axle_se3.yaw
+
+    future_xy = [np.zeros(2)]
+    for k in range(1, PRED_LEN + 1):
+        ego_k = scene.get_ego_state_se3_at_iteration(k)
+        if ego_k is None:
+            break
+        world_xy = np.array([ego_k.rear_axle_se3.x, ego_k.rear_axle_se3.y])
+        future_xy.append(world_to_ego_frame(world_xy, origin_xy, origin_yaw))
+    future_xy = np.array(future_xy)
+
+    near_idx = min(4, len(future_xy) - 1)
+    return np.array([future_xy[near_idx], future_xy[-1]])
+
+
+def compute_target_points_route_or_fallback(
+    scene, data_root, origin_xy: np.ndarray, origin_yaw: float, fallback_near: np.ndarray, fallback_far: np.ndarray,
+    mode: str = "route",
+) -> Tuple[np.ndarray, np.ndarray, bool]:
+    """Tries a real map-based target point method first, falling back to
+    fallback_near/fallback_far (i.e. what __getitem__ already computes from
+    the scene's own future trajectory) whenever no route/map/far-future ego
+    state is available for this scene -- these lead123d/CARLA clips run
+    short enough that not every scene has one. Two map-based methods (see
+    py123d_route_target_points.py's module docstring for the difference):
+      - mode="route": sample_route_target_points_indexed, mirroring CARLA's
+        actual RoutePlanner index-based mechanism (near/far ~1m apart).
+      - mode="drivor": sample_route_target_points_drivor, nav123d's own
+        fixed-arc-length-offset method (near/far tens of meters apart).
+
+    Returns (near, far, used_route) in ego frame -- used_route is recorded
+    into the collected scene's metadata (eval_infos -> target_point_source,
+    see Py123dCarlaDataset.__getitem__ / build_py123d_metadata) as the
+    literal mode string (e.g. "route"/"drivor") on success, since these
+    sources diverge meaningfully and callers analyzing the collected
+    dataset need to know which one actually produced a given scene."""
+    from py123d_route_target_points import (
+        find_scene_with_route_lookahead,
+        sample_route_target_points_drivor,
+        sample_route_target_points_indexed,
+    )
+
+    sampler = sample_route_target_points_drivor if mode == "drivor" else sample_route_target_points_indexed
+
+    route_scene, lookahead = find_scene_with_route_lookahead(data_root, scene.log_name, str(scene.scene_uuid))
+    if route_scene is None:
+        return fallback_near, fallback_far, False
+
+    xy, valid = sampler(route_scene, lookahead_time_s=lookahead)
+    if valid == 0.0:
+        return fallback_near, fallback_far, False
+
+    near = world_to_ego_frame(xy[0], origin_xy, origin_yaw)
+    far = world_to_ego_frame(xy[1], origin_xy, origin_yaw)
+    return near, far, True
+
+
 def project_ego_points(scene, points) -> List[Tuple[float, float]]:
     """Projects ego-frame (forward, lateral) points through this scene's
     actual front camera -- its real per-scene intrinsics and pose
@@ -242,11 +313,26 @@ class Py123dCarlaDataset(Dataset):
         cut_bottom_quarter: bool = True,
         seed: int = 0,
         scene_cache_path: Optional[str] = None,
+        target_point_mode: str = "trajectory",
     ):
         from py123d.api import get_filtered_scenes
         from py123d.api.scene.scene_filter import SceneFilter
 
         self.cut_bottom_quarter = cut_bottom_quarter
+        self.data_root = data_root
+        # "trajectory" (default): approximate near/far target points from the
+        # scene's own recorded future ego motion (see __getitem__ below) --
+        # unchanged from every dataset collected so far. "route"/"drivor":
+        # real map-based reconstructions (py123d_route_target_points.py's
+        # sample_route_target_points_indexed / _drivor respectively --
+        # near/far ~1m apart vs. tens of meters apart, see that module's
+        # docstring), falling back to "trajectory" per-scene whenever no
+        # route/map/far-future ego state is available -- see
+        # compute_target_points_route_or_fallback. Both cost real extra I/O
+        # per scene (re-queries the scene's full log up to 6 times trying
+        # different lookahead windows), so this is opt-in.
+        assert target_point_mode in ("trajectory", "route", "drivor"), f"Unknown target_point_mode: {target_point_mode!r}"
+        self.target_point_mode = target_point_mode
 
         scene_filter = SceneFilter(
             datasets=["carla"],
@@ -391,8 +477,16 @@ class Py123dCarlaDataset(Dataset):
         # Stand-ins for the route-planner's near/far navigation targets:
         # ~1s and full-horizon points along the future trajectory.
         near_idx = min(4, len(future_xy) - 1)
-        target_point = future_xy[near_idx]
-        target_point_next = future_xy[-1]
+        fallback_near, fallback_far = future_xy[near_idx], future_xy[-1]
+        if self.target_point_mode in ("route", "drivor"):
+            target_point, target_point_next, used_route = compute_target_points_route_or_fallback(
+                scene, self.data_root, origin_xy, origin_yaw, fallback_near, fallback_far,
+                mode=self.target_point_mode,
+            )
+            target_point_source = self.target_point_mode if used_route else "trajectory"
+        else:
+            target_point, target_point_next = fallback_near, fallback_far
+            target_point_source = "trajectory"
         target_points = np.array([target_point, target_point_next])
 
         speed_rounded = round(speed, 1)
@@ -447,6 +541,7 @@ class Py123dCarlaDataset(Dataset):
             placeholder_values={"<TARGET_POINT>": target_points},
             measurement_path=run_ref,
             dataset="carla_py123d",
+            eval_infos={"target_point_source": target_point_source},
         )
 
 
@@ -464,7 +559,9 @@ def get_front_camera_image(scene) -> np.ndarray:
     return camera.image  # HWC uint8 RGB, already decoded
 
 
-def find_scene_by_ref(data_root: Optional[str], log_name: str, scene_uuid: str):
+def find_scene_by_ref(
+    data_root: Optional[str], log_name: str, scene_uuid: str, future_duration_s: Optional[float] = None,
+):
     """Re-fetches the exact py123d Scene a collected embedding scene came from,
     given the log_name/scene_uuid saved in its metadata.json (see
     build_py123d_metadata / decode_scene_ref). Not saved at collection time
@@ -473,15 +570,23 @@ def find_scene_by_ref(data_root: Optional[str], log_name: str, scene_uuid: str):
 
     Uses the identical SceneFilter as Py123dCarlaDataset.__init__ (same
     dataset/duration/modality params) so the log is windowed into scenes the
-    same way and scene_uuid actually matches back to the same scene."""
+    same way and scene_uuid actually matches back to the same scene --
+    except future_duration_s, overridable here: callers needing a further
+    future horizon than the collection pipeline's own PRED_LEN window (e.g.
+    py123d_route_target_points.py's route inference, which needs the ego's
+    recorded position up to ROUTE_LOOKAHEAD_TIME_S ahead) can request it
+    without changing what any other scene in the dataset looks like."""
     from py123d.api import get_filtered_scenes
     from py123d.api.scene.scene_filter import SceneFilter
+
+    if future_duration_s is None:
+        future_duration_s = ITERATION_DURATION_S * PRED_LEN
 
     scene_filter = SceneFilter(
         datasets=["carla"],
         log_names=[log_name],
         target_iteration_duration_s=ITERATION_DURATION_S,
-        future_duration_s=ITERATION_DURATION_S * PRED_LEN,
+        future_duration_s=future_duration_s,
         history_duration_s=0.0,
         required_scene_modalities=[f"camera.{FRONT_CAMERA_ID}", "ego_state_se3"],
     )
@@ -562,6 +667,14 @@ def build_py123d_metadata(batch, b_idx: int, text_output: str, num_valid_tokens:
     if batch.driving_input.prompt.language_string is not None:
         prompt = batch.driving_input.prompt.language_string[b_idx]
 
+    # "route" (Py123dCarlaDataset(target_point_mode="route")) or "trajectory"
+    # (default) -- see compute_target_points_route_or_fallback. Route mode
+    # falls back to trajectory per-scene when no route/map/far-future ego
+    # state is available, so this can be "trajectory" even in a route-mode
+    # run; None for datasets collected before this field existed.
+    eval_infos = batch.driving_label.eval_infos[b_idx] if batch.driving_label.eval_infos is not None else None
+    target_point_source = eval_infos.get("target_point_source") if eval_infos else None
+
     return {
         "source": "py123d_carla",
         "dataset": info.get("dataset"),
@@ -576,4 +689,5 @@ def build_py123d_metadata(batch, b_idx: int, text_output: str, num_valid_tokens:
         "text_output": text_output,
         "num_valid_tokens": num_valid_tokens,
         "embedding_type": "commentary",
+        "target_point_source": target_point_source,
     }

@@ -1,0 +1,42 @@
+# Example config for collect_qwen_vl_embeddings.py.
+# Any value here can be overridden by the matching CLI flag, e.g. --max-scenes 50.
+# Needs env_sl_qwenvl (see setup_env_sl_qwenvl.sh), not env_sl.
+
+model_id: Qwen/Qwen3-VL-8B-Instruct
+output_dir: embeddings_dataset_qwen_vl_carla_py123d
+data_root: null              # falls back to $PY123D_DATA_ROOT
+log_names: null                # comma-separated (CLI) or YAML list of py123d CARLA log names, null = all
+reference_dataset: null        # path to an existing embeddings dataset dir (e.g. from
+                                # collect_config_carla_py123d.yaml's output) -- if set, restricts
+                                # collection to exactly that dataset's scenes, overriding log_names.
+                                # e.g.: embeddings_dataset_carla_py123d_smoketest
+max_scenes: null                # cap on number of scenes; if reference_dataset is also set, caps
+                                # how many of its matching scenes to use instead
+scene_cache_path: py123d_carla_scene_cache.json  # same cache file/key scheme as
+                                # collect_config_carla_py123d.yaml -- reusable
+                                # across both scripts as long as log_names/seed match
+target_point_mode: trajectory   # trajectory (default) | route | drivor (real map-based
+                                # reconstructions, see py123d_route_target_points.py -- route:
+                                # near/far ~1m apart, mirrors CARLA's own RoutePlanner index
+                                # mechanism; drivor: near/far tens of meters apart, mirrors
+                                # nav123d's own fixed-arc-length-offset method. Both fall back
+                                # to trajectory per-scene when unavailable, and cost real extra
+                                # I/O per scene -- test with max_scenes small before a full run.
+cut_bottom_quarter: true
+num_workers: 4
+resume: false
+device: cuda                   # cuda | cpu
+dtype: bf16                    # fp32 | fp16 | bf16
+max_new_tokens: 100
+pad_to_dim: null                # null = use the model's actual hidden size, no padding
+seed: 42
+manifest_flush_every: 25
+instruction: >-
+  Describe this driving scene: identify the relevant objects present (other
+  vehicles, pedestrians, cyclists, traffic signs or lights, lane markings,
+  road edges) and any events or hazards that could affect the ego vehicle's
+  upcoming trajectory. Then give high level instructions for how the ego
+  vehicle should navigate the scene safely and efficiently, including any
+  necessary lane changes, speed adjustments, or maneuvers to avoid obstacles
+  or hazards. Be direct and concise -- keep your entire response under 100
+  tokens.

@@ -48,6 +48,12 @@ DEFAULT_SETTINGS = {
     "scene_cache_path": "py123d_carla_scene_cache.json",  # caches the slow
     # full-dataset validation (see Py123dCarlaDataset.__init__); only used
     # when max_scenes is null. Set to null/None to disable.
+    "target_point_mode": "trajectory",  # trajectory (default, unchanged from
+    # every dataset collected so far) | route (real map-based reconstruction,
+    # see py123d_route_target_points.py -- falls back to trajectory per-scene
+    # when unavailable). route costs real extra I/O per scene (re-queries
+    # each scene's full log up to 6 times trying different lookahead
+    # windows) -- test with --max-scenes small before a full run.
     "cut_bottom_quarter": True,
     "batch_size": 4,
     "num_workers": 4,
@@ -55,7 +61,7 @@ DEFAULT_SETTINGS = {
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "dtype": "fp32",
     "max_new_tokens": 100,
-    "pad_to_dim": 2048,
+    "pad_to_dim": None,  # null = use the model's actual hidden size, no padding
     "seed": 42,
     "manifest_flush_every": 25,
 }
@@ -72,6 +78,7 @@ def get_py123d_carla_data_loader(
     num_workers,
     seed,
     scene_cache_path=None,
+    target_point_mode="trajectory",
 ):
     from simlingo_training.dataloader.datamodule import DataModule
 
@@ -103,6 +110,7 @@ def get_py123d_carla_data_loader(
         cut_bottom_quarter=cut_bottom_quarter,
         seed=seed,
         scene_cache_path=scene_cache_path,
+        target_point_mode=target_point_mode,
     )
 
     loader = DataLoader(
@@ -132,6 +140,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Cache file for the full-dataset scene validation (only used when --max-scenes is unset). "
         "Pass an empty string to disable.",
+    )
+    parser.add_argument(
+        "--target-point-mode", choices=["trajectory", "route", "drivor"], default=None,
+        help="trajectory (default): approximate from the scene's own future ego motion. "
+        "route/drivor: real map-based reconstructions (py123d_route_target_points.py -- route: "
+        "near/far ~1m apart, mirrors CARLA's own RoutePlanner index mechanism; drivor: near/far "
+        "tens of meters apart, mirrors nav123d's own fixed-arc-length-offset method), falling "
+        "back to trajectory per-scene when unavailable -- costs real extra I/O per scene.",
     )
     parser.add_argument("--cut-bottom-quarter", action="store_true", default=None)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -193,6 +209,14 @@ def main():
         dtype=DTYPE_MAP[settings["dtype"]],
     )
 
+    # Resolved to a concrete number (never left as None) before it's used
+    # anywhere else: EmbeddingCollector.extract_embeddings treats
+    # pad_to_dim=None as "use the model's actual hidden size" internally, but
+    # write_run_config's mismatch-note logic below does `min(actual, pad_to_dim)`
+    # unconditionally and would crash on a None pad_to_dim.
+    actual_hidden_size = model.language_model.hidden_size
+    settings["pad_to_dim"] = settings["pad_to_dim"] or actual_hidden_size
+
     data_loader, num_scenes_available = get_py123d_carla_data_loader(
         cfg,
         processor,
@@ -204,6 +228,7 @@ def main():
         num_workers=settings["num_workers"],
         seed=settings["seed"],
         scene_cache_path=settings["scene_cache_path"],
+        target_point_mode=settings["target_point_mode"],
     )
     print(f"py123d CARLA scenes available after filtering: {num_scenes_available}")
 
@@ -250,7 +275,7 @@ def main():
     write_run_config(
         output_dir,
         settings,
-        actual_hidden_size=model.language_model.hidden_size,
+        actual_hidden_size=actual_hidden_size,
         num_scenes=collector.scene_counter,
     )
 
